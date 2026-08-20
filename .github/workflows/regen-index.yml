@@ -9,6 +9,22 @@ on:
       - Support/build_filetype_index.rb
   workflow_dispatch:
 
+# `main` is covered by the `protect-default-branch` ruleset, whose `update`
+# rule permits only OrganizationAdmin to push there. GITHUB_TOKEN is not a
+# bypass actor and cannot be made one -- GitHub rejects the GitHub Actions
+# integration as a bypass actor on a repository ruleset:
+#
+#   422 Validation Failed
+#   "Actor GitHub Actions integration must be part of the ruleset source
+#    or owner organization"
+#
+# ...because Actions has no app installation in this org. So this workflow no
+# longer pushes to main. It pushes a bot branch and links the PR to open.
+#
+# Opening that PR automatically is deliberately NOT done: GITHUB_TOKEN can
+# only create pull requests when "Allow GitHub Actions to create and approve
+# pull requests" is on, and that same switch also lets the token *approve*
+# them. Not worth trading for one click.
 permissions:
   contents: write
 
@@ -16,6 +32,8 @@ jobs:
   regen:
     runs-on: macos-latest
     timeout-minutes: 30
+    env:
+      BRANCH: bot/regen-index
     steps:
       - uses: actions/checkout@v4
 
@@ -24,17 +42,34 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: ruby Support/build_filetype_index.rb
 
-      - name: Commit regenerated index
+      - name: Push regenerated index to a branch
         env:
           GH_TOKEN: ${{ github.token }}
+          SERVER_URL: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+
           if git diff --quiet -- Support/BundleFileTypeIndex.plist; then
-            echo "No index changes; nothing to commit."
+            echo "No index changes; nothing to do."
+            echo 'Index already up to date; nothing to do.' >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
+
+          base=$(git rev-parse --abbrev-ref HEAD)
+
           git config user.name  'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -b "$BRANCH"
           git add Support/BundleFileTypeIndex.plist
           git commit -m 'Regenerate BundleFileTypeIndex.plist'
-          git push
+          git push --force origin "$BRANCH"
+
+          url="${SERVER_URL}/${REPO}/compare/${base}...${BRANCH}?expand=1"
+          {
+            echo '### BundleFileTypeIndex.plist regenerated'
+            echo
+            echo "Pushed to \`${BRANCH}\`, branched from \`${base}\`."
+            echo
+            echo "[Open a pull request](${url})"
+          } >> "$GITHUB_STEP_SUMMARY"
